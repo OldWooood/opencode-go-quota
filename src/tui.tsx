@@ -5,11 +5,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Plugin, usePlugin } from "@opencode/plugin/tui";
 import { createSignal, For, onCleanup, Show } from "solid-js";
+import { formatCountdown } from "./format";
 
 const GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const DEFAULT_REFRESH_MS = 30_000;
 const MIN_REFRESH_MS = 10_000;
 const MAX_REFRESH_MS = 600_000;
+/** Countdowns advance at least once a minute even between refreshes. */
+const COUNTDOWN_TICK_MS = 60_000;
 
 type GoWindowState = {
   label: string;
@@ -22,7 +25,8 @@ type GoWindowState = {
 type PanelState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; windows: GoWindowState[] };
+  /** Last successful data; `stale` carries the most recent refresh error, "" when fresh. */
+  | { kind: "ready"; windows: GoWindowState[]; stale: string };
 
 const WINDOW_LABELS = [
   { key: "rolling", label: "5h" },
@@ -41,18 +45,6 @@ function loadApiKey(): string {
   }
 }
 
-function formatCountdown(resetIso: string, now: number): string {
-  const diff = Date.parse(resetIso) - now;
-  if (!Number.isFinite(diff) || diff <= 0) return "soon";
-  const mins = Math.floor(diff / 60_000);
-  const days = Math.floor(mins / 1440);
-  const hours = Math.floor((mins % 1440) / 60);
-  const rest = mins % 60;
-  if (days > 0) return `${days}d ${hours}h ${rest}m`;
-  if (hours > 0) return `${hours}h ${rest}m`;
-  return `${rest}m`;
-}
-
 async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
   const key = loadApiKey();
   if (!key) throw new Error("no opencode-go key (auth.json / OPENCODE_API_KEY)");
@@ -64,19 +56,22 @@ async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
   const payload = (await res.json()) as {
     usage?: Record<string, { status?: string; percent?: number; resetsAt?: string }>;
   };
-  const now = Date.now();
-  return WINDOW_LABELS.map(({ key, label }) => {
+  const windows = WINDOW_LABELS.flatMap(({ key, label }): GoWindowState[] => {
     const w = payload.usage?.[key];
-    const limited = w?.status === "rate-limited";
-    const percent = typeof w?.percent === "number" ? w.percent : 0;
-    void now;
-    return {
-      label,
-      used: limited ? 100 : Math.max(0, Math.min(100, percent)),
-      resetIso: typeof w?.resetsAt === "string" ? w.resetsAt : "",
-      limited,
-    };
+    if (!w) return [];
+    const limited = w.status === "rate-limited";
+    const percent = typeof w.percent === "number" ? w.percent : 0;
+    return [
+      {
+        label,
+        used: limited ? 100 : Math.max(0, Math.min(100, percent)),
+        resetIso: typeof w.resetsAt === "string" ? w.resetsAt : "",
+        limited,
+      },
+    ];
   });
+  if (windows.length === 0) throw new Error("no usage windows in response");
+  return windows;
 }
 
 function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
@@ -85,27 +80,37 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
   const mode = props.mode ?? "used";
   const [state, setState] = createSignal<PanelState>({ kind: "loading" });
   let disposed = false;
+  let inflight = false;
   const controller = new AbortController();
 
   const refresh = async () => {
+    if (disposed || inflight) return;
+    inflight = true;
     try {
       const windows = await fetchWindows(controller.signal);
-      if (!disposed) setState({ kind: "ready", windows });
+      if (!disposed) setState({ kind: "ready", windows, stale: "" });
     } catch (error) {
       if (!disposed) {
-        setState({
-          kind: "error",
-          message: error instanceof Error ? error.message.slice(0, 80) : "unknown",
-        });
+        const message = error instanceof Error ? error.message.slice(0, 80) : "unknown";
+        // Keep the last successful data visible; only a failure before any
+        // data has ever loaded takes over the panel.
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, stale: message } : { kind: "error", message },
+        );
       }
+    } finally {
+      inflight = false;
     }
   };
 
   void refresh();
   const timer = setInterval(() => void refresh(), refreshMs);
+  const [now, setNow] = createSignal(Date.now());
+  const clock = setInterval(() => setNow(Date.now()), COUNTDOWN_TICK_MS);
   onCleanup(() => {
     disposed = true;
     clearInterval(timer);
+    clearInterval(clock);
     controller.abort();
   });
 
@@ -134,12 +139,24 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
     const s = state();
     return s.kind === "ready" ? s.windows : undefined;
   };
+  /** Marker shown when the visible data comes from a failed refresh. */
+  const staleMark = () => {
+    const s = state();
+    return s.kind === "ready" && s.stale ? " ⚠ stale" : "";
+  };
 
   return (
     <box flexDirection="column">
-      <text fg={ctx.theme.text.base}>
-        <strong>OpenCode Go</strong>
-      </text>
+      <box flexDirection="row">
+        <text fg={ctx.theme.text.base}>
+          <strong>OpenCode Go</strong>
+        </text>
+        <Show when={staleMark()}>
+          {(mark: () => string) => (
+            <text fg={ctx.theme.text.feedback.warning.muted}>{mark()}</text>
+          )}
+        </Show>
+      </box>
       <Show
         when={errMsg()}
         fallback={
@@ -149,7 +166,8 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
                 {(w: GoWindowState) => {
                   const pct = displayPct(w);
                   const filled = Math.round((pct / 100) * BAR_WIDTH);
-                  const reset = w.resetIso ? ` · ${formatCountdown(w.resetIso, Date.now())}` : "";
+                  const reset = () =>
+                    w.resetIso ? ` · ${formatCountdown(w.resetIso, now())}` : "";
                   return (
                     <box flexDirection="column">
                       <box flexDirection="row">
@@ -157,28 +175,18 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
                         <text fg={ctx.theme.text.muted}>{`${pct}%`}</text>
                         <text
                           fg={ctx.theme.text.muted}
-                        >{`${w.limited ? " (limited)" : ""}${reset}`}</text>
+                        >{`${w.limited ? " (limited)" : ""}${reset()}`}</text>
                       </box>
-                      <Show
-                        when={filled >= BAR_WIDTH}
-                        fallback={
-                          <Show
-                            when={filled <= 0}
-                            fallback={
-                              <box flexDirection="row">
-                                <text fg={barFill(w)}>{"━".repeat(filled)}</text>
-                                <text fg={trackColor}>{"─".repeat(BAR_WIDTH - filled)}</text>
-                              </box>
-                            }
-                          >
-                            <text fg={w.limited ? barFill(w) : trackColor}>
-                              {"─".repeat(BAR_WIDTH)}
-                            </text>
-                          </Show>
-                        }
-                      >
-                        <text fg={barFill(w)}>{"━".repeat(BAR_WIDTH)}</text>
-                      </Show>
+                      <box flexDirection="row">
+                        <Show when={filled > 0}>
+                          <text fg={barFill(w)}>{"━".repeat(filled)}</text>
+                        </Show>
+                        <Show when={filled < BAR_WIDTH}>
+                          <text fg={w.limited ? barFill(w) : trackColor}>
+                            {"─".repeat(BAR_WIDTH - filled)}
+                          </text>
+                        </Show>
+                      </box>
                     </box>
                   );
                 }}

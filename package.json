@@ -8,11 +8,11 @@
     "./tui": "./src/tui.tsx"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.18"
+    "@opencode/plugin": "^2.0.32"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.8",
-    "@opentui/solid": ">=0.5.8",
+    "@opentui/core": ">=0.5.12",
+    "@opentui/solid": ">=0.5.12",
     "solid-js": ">=1.9.0"
   },
   "devDependencies": {
@@ -23,6 +23,8 @@
     "typescript": "7.0.2"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "test:render": "bun --preload @opentui/solid/preload test/render-smoke.mjs"
   }
 }

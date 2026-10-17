@@ -19,6 +19,8 @@ Monthly 26% · 23d 18h 33m
 - Each window shows label, percent, and reset countdown, followed by a full-width bar
 - Bar color follows the active theme: green <50% / yellow 50–80% / red ≥80% or rate-limited
 - Styling matches the native Context block; refreshes every 30 seconds by default
+- A failed refresh keeps the last known values visible and marks them `⚠ stale`
+  instead of blanking the panel
 
 ## Install
 
@@ -80,4 +82,9 @@ To uninstall, remove the entry from `cli.json` and restart the TUI.
 ```bash
 pnpm install
 pnpm typecheck
+pnpm test          # unit tests (node --test)
+pnpm test:render   # headless TUI smoke test; requires bun on PATH
 ```
+
+`pnpm test:render` mounts the panel in the real @opentui test renderer and
+checks the ready / partial / stale / error / slow-refresh scenarios.
