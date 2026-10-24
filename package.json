@@ -1,7 +1,7 @@
 {
   "name": "opencode-go-quota",
   "version": "0.1.0",
-  "description": "Minimal OpenCode v2 sidebar showing OpenCode Go quota (5h / Weekly / Monthly).",
+  "description": "Minimal OpenCode v2 sidebar and status bar showing OpenCode Go quota (5h / Weekly / Monthly).",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

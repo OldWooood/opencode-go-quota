@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Plugin, usePlugin } from "@opencode/plugin/tui";
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { formatCountdown } from "./format";
 
 const GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
@@ -16,6 +16,8 @@ const COUNTDOWN_TICK_MS = 60_000;
 
 type GoWindowState = {
   label: string;
+  /** Compact label for the bottom status bar, e.g. Wk / Mo. */
+  shortLabel: string;
   /** 已用百分比，和官网 console 口径一致 */
   used: number;
   resetIso: string;
@@ -29,9 +31,9 @@ type PanelState =
   | { kind: "ready"; windows: GoWindowState[]; stale: string };
 
 const WINDOW_LABELS = [
-  { key: "rolling", label: "5h" },
-  { key: "weekly", label: "Weekly" },
-  { key: "monthly", label: "Monthly" },
+  { key: "rolling", label: "5h", short: "5H" },
+  { key: "weekly", label: "Weekly", short: "W" },
+  { key: "monthly", label: "Monthly", short: "M" },
 ] as const;
 
 function loadApiKey(): string {
@@ -56,7 +58,7 @@ async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
   const payload = (await res.json()) as {
     usage?: Record<string, { status?: string; percent?: number; resetsAt?: string }>;
   };
-  const windows = WINDOW_LABELS.flatMap(({ key, label }): GoWindowState[] => {
+  const windows = WINDOW_LABELS.flatMap(({ key, label, short }): GoWindowState[] => {
     const w = payload.usage?.[key];
     if (!w) return [];
     const limited = w.status === "rate-limited";
@@ -64,6 +66,7 @@ async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
     return [
       {
         label,
+        shortLabel: short,
         used: limited ? 100 : Math.max(0, Math.min(100, percent)),
         resetIso: typeof w.resetsAt === "string" ? w.resetsAt : "",
         limited,
@@ -74,11 +77,9 @@ async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
   return windows;
 }
 
-function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
-  const ctx = usePlugin();
-  const refreshMs = props.refreshMs ?? DEFAULT_REFRESH_MS;
-  const mode = props.mode ?? "used";
+function createQuota(refreshMs: number) {
   const [state, setState] = createSignal<PanelState>({ kind: "loading" });
+  const [now, setNow] = createSignal(Date.now());
   let disposed = false;
   let inflight = false;
   const controller = new AbortController();
@@ -105,31 +106,50 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
 
   void refresh();
   const timer = setInterval(() => void refresh(), refreshMs);
-  const [now, setNow] = createSignal(Date.now());
   const clock = setInterval(() => setNow(Date.now()), COUNTDOWN_TICK_MS);
-  onCleanup(() => {
+
+  const dispose = () => {
     disposed = true;
     clearInterval(timer);
     clearInterval(clock);
     controller.abort();
-  });
+  };
+  return { state, now, dispose };
+}
+
+type Quota = ReturnType<typeof createQuota>;
+
+/** Display value by mode: used% or left%. Limited windows read 100% used / 0% left. */
+function displayPct(w: GoWindowState, mode: "used" | "left"): number {
+  return mode === "left" ? 100 - w.used : w.used;
+}
+
+function usageColor(
+  theme: ReturnType<typeof usePlugin>["theme"],
+  w: GoWindowState,
+  mode: "used" | "left",
+): string {
+  const v = displayPct(w, mode);
+  if (w.limited) return theme.text.feedback.error.muted;
+  if (mode === "left") {
+    if (v <= 20) return theme.text.feedback.error.muted;
+    if (v < 50) return theme.text.feedback.warning.muted;
+    return theme.text.feedback.success.muted;
+  }
+  if (v >= 80) return theme.text.feedback.error.muted;
+  if (v >= 50) return theme.text.feedback.warning.muted;
+  return theme.text.feedback.success.muted;
+}
+
+function GoPanel(props: { quota: Quota; mode: "used" | "left" }) {
+  const ctx = usePlugin();
+  const mode = props.mode;
+  const state = props.quota.state;
+  const now = props.quota.now;
 
   const BAR_WIDTH = 28;
   const trackColor = ctx.theme.border.base;
-  /** Display value by mode: used% or left%. Limited windows read 100% used / 0% left. */
-  const displayPct = (w: GoWindowState) => (mode === "left" ? 100 - w.used : w.used);
-  const barFill = (w: GoWindowState) => {
-    const v = displayPct(w);
-    if (w.limited) return ctx.theme.text.feedback.error.muted;
-    if (mode === "left") {
-      if (v <= 20) return ctx.theme.text.feedback.error.muted;
-      if (v < 50) return ctx.theme.text.feedback.warning.muted;
-      return ctx.theme.text.feedback.success.muted;
-    }
-    if (v >= 80) return ctx.theme.text.feedback.error.muted;
-    if (v >= 50) return ctx.theme.text.feedback.warning.muted;
-    return ctx.theme.text.feedback.success.muted;
-  };
+  const barFill = (w: GoWindowState) => usageColor(ctx.theme, w, mode);
 
   const errMsg = () => {
     const s = state();
@@ -164,7 +184,7 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
             {(wins: () => GoWindowState[]) => (
               <For each={wins()}>
                 {(w: GoWindowState) => {
-                  const pct = displayPct(w);
+                  const pct = displayPct(w, mode);
                   const filled = Math.round((pct / 100) * BAR_WIDTH);
                   const reset = () =>
                     w.resetIso ? ` · ${formatCountdown(w.resetIso, now())}` : "";
@@ -201,16 +221,78 @@ function GoPanel(props: { refreshMs?: number; mode?: "used" | "left" }) {
   );
 }
 
+/** One-line quota summary for the bottom status bar. */
+function GoStatus(props: { quota: Quota; mode: "used" | "left" }) {
+  const ctx = usePlugin();
+  const mode = props.mode;
+  const state = props.quota.state;
+  const windows = () => {
+    const s = state();
+    return s.kind === "ready" ? s.windows : [];
+  };
+  const stale = () => {
+    const s = state();
+    return s.kind === "ready" && s.stale !== "";
+  };
+  const loading = () => state().kind === "loading";
+  const failed = () => state().kind === "error";
+
+  return (
+    <box flexDirection="row" flexShrink={0}>
+      <text fg={ctx.theme.text.muted} wrapMode="none">
+        <span style={{ fg: ctx.theme.text.muted }}>[Go]</span>
+        <Show when={loading()}>
+          <span style={{ fg: ctx.theme.text.muted }}> …</span>
+        </Show>
+        <Show when={failed()}>
+          <span style={{ fg: ctx.theme.text.muted }}> ⚠</span>
+        </Show>
+        <For each={windows()}>
+          {(w: GoWindowState, index: () => number) => (
+            <>
+              <span style={{ fg: ctx.theme.text.muted }}>
+                {`${index() === 0 ? " " : "  "}${w.shortLabel}: `}
+              </span>
+              <span style={{ fg: ctx.theme.text.muted }}>{`${displayPct(w, mode)}%`}</span>
+            </>
+          )}
+        </For>
+        <Show when={stale()}>
+          <span style={{ fg: ctx.theme.text.muted }}> ⚠</span>
+        </Show>
+      </text>
+    </box>
+  );
+}
+
 export default Plugin.define({
   id: "opencode-go-sidebar",
   setup(context) {
     const opts = (context.options as { refreshSec?: unknown; mode?: unknown } | undefined) ?? {};
-    const sec = typeof opts.refreshSec === "number" && Number.isFinite(opts.refreshSec) ? opts.refreshSec : 30;
+    const sec =
+      typeof opts.refreshSec === "number" && Number.isFinite(opts.refreshSec)
+        ? opts.refreshSec
+        : DEFAULT_REFRESH_MS / 1000;
     const refreshMs = Math.min(MAX_REFRESH_MS, Math.max(MIN_REFRESH_MS, sec * 1000));
     const mode = opts.mode === "left" ? "left" : ("used" as const);
-    return context.ui.slot({
-      append: "sidebar.content",
-      render: () => <GoPanel refreshMs={refreshMs} mode={mode} />,
-    });
+    const quota = createQuota(refreshMs);
+    const cleanups = [
+      context.ui.slot({
+        append: "sidebar.content",
+        render: () => <GoPanel quota={quota} mode={mode} />,
+      }),
+      context.ui.slot({
+        append: "prompt.footer.status",
+        render: () => <GoStatus quota={quota} mode={mode} />,
+      }),
+      context.ui.slot({
+        append: "home.footer.status",
+        render: () => <GoStatus quota={quota} mode={mode} />,
+      }),
+    ];
+    return () => {
+      for (const cleanup of cleanups) cleanup();
+      quota.dispose();
+    };
   },
 });

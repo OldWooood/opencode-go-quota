@@ -6,7 +6,7 @@
 // so leaked timers or renderer state cannot affect the next one.
 import { fileURLToPath } from "node:url";
 
-const SCENARIOS = ["ready", "partial", "stale", "error", "slow"];
+const SCENARIOS = ["ready", "partial", "stale", "error", "slow", "status"];
 
 if (typeof Bun === "undefined") {
   console.error("test:render needs bun; run `pnpm test:render`");
@@ -85,25 +85,38 @@ globalThis.fetch = async () => {
     await sleep(12_000);
     return respond(sample);
   }
-  if (scenario === "ready") return respond(sample);
+  if (scenario === "ready" || scenario === "status") return respond(sample);
   if (scenario === "partial") return respond(partial);
   if (scenario === "stale" && calls === 1) return respond(sample);
   return new Response("boom", { status: 500 });
 };
 
-let claim;
+const claims = new Map();
 const context = {
   options: scenario === "stale" || scenario === "slow" ? { refreshSec: 10 } : {},
   theme,
   ui: {
     slot: (c) => {
-      claim = c;
+      claims.set(c.append, c);
       return () => {};
     },
   },
 };
 
 tui.setup(context);
+
+const sidebar = claims.get("sidebar.content");
+const status = claims.get("prompt.footer.status");
+const homeStatus = claims.get("home.footer.status");
+if (!sidebar) throw new Error(`[${scenario}] sidebar.content claim missing`);
+if (!status) throw new Error(`[${scenario}] prompt.footer.status claim missing`);
+if (!homeStatus) throw new Error(`[${scenario}] home.footer.status claim missing`);
+
+const claim = scenario === "status" ? status : sidebar;
+const input =
+  scenario === "status"
+    ? { sessionID: "s1", mode: "normal", showDetails: false }
+    : { sessionID: "s1" };
 
 // Defer the tree to mount time: the opentui runtime creates elements eagerly,
 // and intrinsic elements need the renderer attached first.
@@ -112,10 +125,10 @@ const t = await testRender(
     createComponent(PluginContextProvider, {
       value: context,
       get children() {
-        return claim.render({ sessionID: "s1" });
+        return claim.render(input);
       },
     }),
-  { width: 44, height: 12 },
+  { width: scenario === "status" ? 80 : 44, height: scenario === "status" ? 3 : 12 },
 );
 
 await sleep(150);
@@ -135,44 +148,48 @@ const reject = (text, label) => {
 };
 
 console.log(`[${scenario}] first paint:\n${frame()}`);
-expect("OpenCode Go", "header");
-
-if (scenario === "ready") {
-  expect("5h", "5h row");
-  expect("2%", "rolling percent");
-  expect("18%", "weekly percent");
-  expect("43%", "monthly percent");
-  expect("━", "filled bar");
-  expect("─", "empty bar");
+if (scenario === "status") {
+  expect("[Go] 5H: 2%  W: 18%  M: 43%", "status summary");
   reject("stale", "stale marker");
-} else if (scenario === "partial") {
-  expect("5h", "5h row");
-  reject("Weekly", "absent weekly window");
-  reject("Monthly", "absent monthly window");
-} else if (scenario === "error") {
-  expect("Go: Go API 500", "error line");
-  reject("Weekly", "data without a successful load");
-} else if (scenario === "slow") {
-  expect("loading…", "loading state");
-  if (calls !== 1) throw new Error(`[${scenario}] expected 1 fetch at start, got ${calls}`);
-  await sleep(10_400);
-  if (calls !== 1) {
-    throw new Error(`[${scenario}] interval tick during inflight was not skipped (calls=${calls})`);
-  }
-  await sleep(2_600);
-  await t.renderOnce();
-  console.log(`[${scenario}] after slow fetch resolves:\n${frame()}`);
-  expect("Weekly", "data after slow fetch resolves");
-  if (calls !== 1) throw new Error(`[${scenario}] unexpected extra fetch (calls=${calls})`);
 } else {
-  expect("Weekly", "initial data");
-  reject("stale", "stale marker before any failure");
-  await sleep(10_700);
-  await t.renderOnce();
-  console.log(`[${scenario}] after failed refresh:\n${frame()}`);
-  expect("⚠ stale", "stale marker");
-  expect("18%", "data kept after failure");
-  expect("43%", "monthly kept after failure");
+  expect("OpenCode Go", "header");
+  if (scenario === "ready") {
+    expect("5h", "5h row");
+    expect("2%", "rolling percent");
+    expect("18%", "weekly percent");
+    expect("43%", "monthly percent");
+    expect("━", "filled bar");
+    expect("─", "empty bar");
+    reject("stale", "stale marker");
+  } else if (scenario === "partial") {
+    expect("5h", "5h row");
+    reject("Weekly", "absent weekly window");
+    reject("Monthly", "absent monthly window");
+  } else if (scenario === "error") {
+    expect("Go: Go API 500", "error line");
+    reject("Weekly", "data without a successful load");
+  } else if (scenario === "slow") {
+    expect("loading…", "loading state");
+    if (calls !== 1) throw new Error(`[${scenario}] expected 1 fetch at start, got ${calls}`);
+    await sleep(10_400);
+    if (calls !== 1) {
+      throw new Error(`[${scenario}] interval tick during inflight was not skipped (calls=${calls})`);
+    }
+    await sleep(2_600);
+    await t.renderOnce();
+    console.log(`[${scenario}] after slow fetch resolves:\n${frame()}`);
+    expect("Weekly", "data after slow fetch resolves");
+    if (calls !== 1) throw new Error(`[${scenario}] unexpected extra fetch (calls=${calls})`);
+  } else {
+    expect("Weekly", "initial data");
+    reject("stale", "stale marker before any failure");
+    await sleep(10_700);
+    await t.renderOnce();
+    console.log(`[${scenario}] after failed refresh:\n${frame()}`);
+    expect("⚠ stale", "stale marker");
+    expect("18%", "data kept after failure");
+    expect("43%", "monthly kept after failure");
+  }
 }
 
 console.log(`[${scenario}] OK (fetch calls: ${calls})`);
