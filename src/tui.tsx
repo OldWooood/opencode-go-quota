@@ -275,20 +275,21 @@ function GoStatus(props: { quota: Quota; mode: "used" | "left"; show: readonly W
   return (
     <box flexDirection="row" flexShrink={0}>
       <text fg={ctx.theme.text.muted} wrapMode="none">
-        <span style={{ fg: ctx.theme.text.muted }}>[Go]</span>
         <Show when={loading()}>
-          <span style={{ fg: ctx.theme.text.muted }}> …</span>
+          <span style={{ fg: ctx.theme.text.muted }}>…</span>
         </Show>
         <Show when={failed()}>
-          <span style={{ fg: ctx.theme.text.muted }}> ⚠</span>
+          <span style={{ fg: ctx.theme.text.muted }}>⚠</span>
         </Show>
         <Show when={readyEmpty()}>
-          <span style={{ fg: ctx.theme.text.muted }}> —</span>
+          <span style={{ fg: ctx.theme.text.muted }}>—</span>
         </Show>
         <For each={windows()}>
-          {(w: GoWindowState) => (
+          {(w: GoWindowState, index: () => number) => (
             <>
-              <span style={{ fg: ctx.theme.text.muted }}>{` ${w.shortLabel}:`}</span>
+              <span style={{ fg: ctx.theme.text.muted }}>
+                {`${index() === 0 ? "" : " "}${w.shortLabel}:`}
+              </span>
               <span style={{ fg: ctx.theme.text.muted }}>{`${displayPct(w, mode)}%`}</span>
             </>
           )}

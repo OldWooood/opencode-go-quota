@@ -157,10 +157,10 @@ const reject = (text, label) => {
 console.log(`[${scenario}] first paint:\n${frame()}`);
 if (scenario.startsWith("status")) {
   if (scenario === "status-filtered") {
-    expect("[Go] W:18% M:43%", "filtered status summary");
+    expect("W:18% M:43%", "filtered status summary");
     reject("5H", "hidden rolling window");
   } else {
-    expect("[Go] 5H:2% W:18% M:43%", "status summary");
+    expect("5H:2% W:18% M:43%", "status summary");
   }
   reject("stale", "stale marker");
 } else {

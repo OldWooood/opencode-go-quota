@@ -19,7 +19,7 @@ Monthly 26% · 23d 18h 33m
 Bottom status bar (session and home screens):
 
 ```
-[Go] 5H:6% W:11% M:5%
+5H:6% W:11% M:5%
 ```
 
 - Percentages are **used**, matching the OpenCode console
