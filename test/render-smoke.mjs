@@ -6,7 +6,7 @@
 // so leaked timers or renderer state cannot affect the next one.
 import { fileURLToPath } from "node:url";
 
-const SCENARIOS = ["ready", "partial", "stale", "error", "slow", "status"];
+const SCENARIOS = ["ready", "partial", "stale", "error", "slow", "status", "status-filtered"];
 
 if (typeof Bun === "undefined") {
   console.error("test:render needs bun; run `pnpm test:render`");
@@ -85,7 +85,7 @@ globalThis.fetch = async () => {
     await sleep(12_000);
     return respond(sample);
   }
-  if (scenario === "ready" || scenario === "status") return respond(sample);
+  if (scenario === "ready" || scenario.startsWith("status")) return respond(sample);
   if (scenario === "partial") return respond(partial);
   if (scenario === "stale" && calls === 1) return respond(sample);
   return new Response("boom", { status: 500 });
@@ -93,7 +93,12 @@ globalThis.fetch = async () => {
 
 const claims = new Map();
 const context = {
-  options: scenario === "stale" || scenario === "slow" ? { refreshSec: 10 } : {},
+  options:
+    scenario === "stale" || scenario === "slow"
+      ? { refreshSec: 10 }
+      : scenario === "status-filtered"
+        ? { statusWindows: ["w", "monthly"] }
+        : {},
   theme,
   ui: {
     slot: (c) => {
@@ -112,11 +117,10 @@ if (!sidebar) throw new Error(`[${scenario}] sidebar.content claim missing`);
 if (!status) throw new Error(`[${scenario}] prompt.footer.status claim missing`);
 if (!homeStatus) throw new Error(`[${scenario}] home.footer.status claim missing`);
 
-const claim = scenario === "status" ? status : sidebar;
-const input =
-  scenario === "status"
-    ? { sessionID: "s1", mode: "normal", showDetails: false }
-    : { sessionID: "s1" };
+const claim = scenario.startsWith("status") ? status : sidebar;
+const input = scenario.startsWith("status")
+  ? { sessionID: "s1", mode: "normal", showDetails: false }
+  : { sessionID: "s1" };
 
 // Defer the tree to mount time: the opentui runtime creates elements eagerly,
 // and intrinsic elements need the renderer attached first.
@@ -128,7 +132,10 @@ const t = await testRender(
         return claim.render(input);
       },
     }),
-  { width: scenario === "status" ? 80 : 44, height: scenario === "status" ? 3 : 12 },
+  {
+    width: scenario.startsWith("status") ? 80 : 44,
+    height: scenario.startsWith("status") ? 3 : 12,
+  },
 );
 
 await sleep(150);
@@ -148,8 +155,13 @@ const reject = (text, label) => {
 };
 
 console.log(`[${scenario}] first paint:\n${frame()}`);
-if (scenario === "status") {
-  expect("[Go] 5H: 2%  W: 18%  M: 43%", "status summary");
+if (scenario.startsWith("status")) {
+  if (scenario === "status-filtered") {
+    expect("[Go] W:18% M:43%", "filtered status summary");
+    reject("5H", "hidden rolling window");
+  } else {
+    expect("[Go] 5H:2% W:18% M:43%", "status summary");
+  }
   reject("stale", "stale marker");
 } else {
   expect("OpenCode Go", "header");

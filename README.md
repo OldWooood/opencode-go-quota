@@ -19,14 +19,16 @@ Monthly 26% · 23d 18h 33m
 Bottom status bar (session and home screens):
 
 ```
-[Go] 5H: 6%  W: 11%  M: 5%
+[Go] 5H:6% W:11% M:5%
 ```
 
 - Percentages are **used**, matching the OpenCode console
 - Each window shows label, percent, and reset countdown, followed by a full-width bar
 - Sidebar bar color follows the active theme: green <50% / yellow 50–80% / red ≥80% or rate-limited
-- The status bar summary stays monochrome and abbreviates Weekly/Monthly as
-  `W`/`M` to blend with the rest of the status line
+- The status bar summary stays monochrome and compact (`label:percent`), and
+  abbreviates Weekly/Monthly as `W`/`M` to blend with the rest of the status line
+- `statusWindows` picks which windows the status bar shows; `status: false`
+  hides the summary entirely while keeping the sidebar
 - Styling matches the native Context block; refreshes every 30 seconds by default
 - A failed refresh keeps the last known values visible and marks them `⚠ stale`
   instead of blanking the panel; the status bar appends `⚠`
@@ -50,7 +52,7 @@ With options:
   "plugins": [
     {
       "package": "/path/to/opencode-go-quota",
-      "options": { "refreshSec": 30, "mode": "used" }
+      "options": { "refreshSec": 30, "mode": "used", "statusWindows": ["weekly", "monthly"] }
     }
   ]
 }
@@ -61,6 +63,12 @@ With options:
   In `left` mode the bar fills by remaining, the color bands are mirrored
   (green ≥50% left, yellow 20–50%, red ≤20% or rate-limited), and the status
   bar shows remaining percentages too.
+- `statusWindows`: which quotas the status bar shows, e.g.
+  `["weekly", "monthly"]`. Accepts `rolling` / `weekly` / `monthly` (aliases
+  `5h` / `w` / `m`); default is all three. The sidebar still shows every window
+  the API returns.
+- `status`: set to `false` to hide the status bar summary entirely; default
+  `true`.
 
 > `opencode plugin add` is not supported. It registers a server plugin in
 > `opencode.json`, whose TUI loads from an isolated cache copy with its own

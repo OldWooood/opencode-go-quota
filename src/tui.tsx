@@ -15,6 +15,8 @@ const MAX_REFRESH_MS = 600_000;
 const COUNTDOWN_TICK_MS = 60_000;
 
 type GoWindowState = {
+  /** API key, used to filter which windows appear in the status bar. */
+  key: WindowKey;
   label: string;
   /** Compact label for the bottom status bar, e.g. Wk / Mo. */
   shortLabel: string;
@@ -35,6 +37,33 @@ const WINDOW_LABELS = [
   { key: "weekly", label: "Weekly", short: "W" },
   { key: "monthly", label: "Monthly", short: "M" },
 ] as const;
+
+type WindowKey = (typeof WINDOW_LABELS)[number]["key"];
+
+const WINDOW_ALIASES: Record<string, WindowKey> = {
+  rolling: "rolling",
+  "5h": "rolling",
+  weekly: "weekly",
+  w: "weekly",
+  monthly: "monthly",
+  m: "monthly",
+};
+
+/**
+ * Which windows to show in the status bar. Accepts canonical keys and short
+ * aliases (`5h`/`w`/`m`); unknown entries are ignored. Returns undefined when
+ * nothing valid was provided, so the caller can fall back to all windows.
+ */
+function parseStatusWindows(value: unknown): WindowKey[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const keys = new Set<WindowKey>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const key = WINDOW_ALIASES[item.trim().toLowerCase()];
+    if (key) keys.add(key);
+  }
+  return keys.size > 0 ? [...keys] : undefined;
+}
 
 function loadApiKey(): string {
   if (process.env.OPENCODE_API_KEY) return process.env.OPENCODE_API_KEY;
@@ -65,6 +94,7 @@ async function fetchWindows(signal: AbortSignal): Promise<GoWindowState[]> {
     const percent = typeof w.percent === "number" ? w.percent : 0;
     return [
       {
+        key,
         label,
         shortLabel: short,
         used: limited ? 100 : Math.max(0, Math.min(100, percent)),
@@ -222,13 +252,18 @@ function GoPanel(props: { quota: Quota; mode: "used" | "left" }) {
 }
 
 /** One-line quota summary for the bottom status bar. */
-function GoStatus(props: { quota: Quota; mode: "used" | "left" }) {
+function GoStatus(props: { quota: Quota; mode: "used" | "left"; show: readonly WindowKey[] }) {
   const ctx = usePlugin();
   const mode = props.mode;
   const state = props.quota.state;
   const windows = () => {
     const s = state();
-    return s.kind === "ready" ? s.windows : [];
+    if (s.kind !== "ready") return [];
+    return s.windows.filter((w) => props.show.includes(w.key));
+  };
+  const readyEmpty = () => {
+    const s = state();
+    return s.kind === "ready" && windows().length === 0;
   };
   const stale = () => {
     const s = state();
@@ -247,12 +282,13 @@ function GoStatus(props: { quota: Quota; mode: "used" | "left" }) {
         <Show when={failed()}>
           <span style={{ fg: ctx.theme.text.muted }}> ⚠</span>
         </Show>
+        <Show when={readyEmpty()}>
+          <span style={{ fg: ctx.theme.text.muted }}> —</span>
+        </Show>
         <For each={windows()}>
-          {(w: GoWindowState, index: () => number) => (
+          {(w: GoWindowState) => (
             <>
-              <span style={{ fg: ctx.theme.text.muted }}>
-                {`${index() === 0 ? " " : "  "}${w.shortLabel}: `}
-              </span>
+              <span style={{ fg: ctx.theme.text.muted }}>{` ${w.shortLabel}:`}</span>
               <span style={{ fg: ctx.theme.text.muted }}>{`${displayPct(w, mode)}%`}</span>
             </>
           )}
@@ -268,28 +304,37 @@ function GoStatus(props: { quota: Quota; mode: "used" | "left" }) {
 export default Plugin.define({
   id: "opencode-go-sidebar",
   setup(context) {
-    const opts = (context.options as { refreshSec?: unknown; mode?: unknown } | undefined) ?? {};
+    const opts =
+      (context.options as
+        | { refreshSec?: unknown; mode?: unknown; status?: unknown; statusWindows?: unknown }
+        | undefined) ?? {};
     const sec =
       typeof opts.refreshSec === "number" && Number.isFinite(opts.refreshSec)
         ? opts.refreshSec
         : DEFAULT_REFRESH_MS / 1000;
     const refreshMs = Math.min(MAX_REFRESH_MS, Math.max(MIN_REFRESH_MS, sec * 1000));
     const mode = opts.mode === "left" ? "left" : ("used" as const);
+    const statusEnabled = opts.status !== false;
+    const statusWindows = parseStatusWindows(opts.statusWindows) ?? WINDOW_LABELS.map((w) => w.key);
     const quota = createQuota(refreshMs);
     const cleanups = [
       context.ui.slot({
         append: "sidebar.content",
         render: () => <GoPanel quota={quota} mode={mode} />,
       }),
-      context.ui.slot({
-        append: "prompt.footer.status",
-        render: () => <GoStatus quota={quota} mode={mode} />,
-      }),
-      context.ui.slot({
-        append: "home.footer.status",
-        render: () => <GoStatus quota={quota} mode={mode} />,
-      }),
     ];
+    if (statusEnabled) {
+      cleanups.push(
+        context.ui.slot({
+          append: "prompt.footer.status",
+          render: () => <GoStatus quota={quota} mode={mode} show={statusWindows} />,
+        }),
+        context.ui.slot({
+          append: "home.footer.status",
+          render: () => <GoStatus quota={quota} mode={mode} show={statusWindows} />,
+        }),
+      );
+    }
     return () => {
       for (const cleanup of cleanups) cleanup();
       quota.dispose();
